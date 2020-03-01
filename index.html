@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Shakecheer</title>
+
+    <!-- Styles -->
+    <style>
+        #chartdiv {
+            width: 100%;
+            height: 500px;
+        }
+
+    </style>
+
+    <!-- Resources -->
+    <script src="https://www.amcharts.com/lib/4/core.js"></script>
+    <script src="https://www.amcharts.com/lib/4/charts.js"></script>
+    <script src="https://www.amcharts.com/lib/4/themes/animated.js"></script>
+</head>
+<body>
+
+
+<div>
+
+    <p>Power：<span id="power"><b> 0 </b></span></p>
+    <p>Count：<span id="count"><b> 0 </b></span>回</p>
+    <p>
+    <div>x: <span id="x">0</span></div>
+    <div>y: <span id="y">0</span></div>
+    <div>z: <span id="z">0</span></div>
+    <div>vec: <span id="vec">0</span></div>
+    <div>Signals from algorithm: <span id="signals">0</span></div>
+    </p>
+
+</div>
+
+
+<!-- HTML -->
+<div id="chartdiv"></div>
+
+<script type="text/javascript">
+    var motionData = [];
+    var timer;
+    var totalCount = 0;
+    var originalDateWhenShakeStopped;
+    var newDateAfterShakeStopped;
+    var isShakingInContinue=true;
+
+    window.onload = function () {
+        // Check permission in IOS
+        if ( window.DeviceMotionEvent && typeof window.DeviceMotionEvent.requestPermission === 'function' ){
+            window.DeviceMotionEvent.requestPermission()
+                .catch(e => {
+                    //NotAllowedError:Requesting device orientation or motion access requires a user gesture to prompt
+                    const banner = document.createElement('div')
+                    banner.innerHTML = `<div style="z-index: 1; position: absolute; width: 100%; background-color:#000; color: #fff" id="askPermission"><p style="padding: 10px">Click here to enable DeviceMotion</p></div>`
+                    banner.onclick = ClickRequestDeviceMotionEvent;
+                    document.querySelector('body').appendChild(banner)
+                })
+        }
+    }
+
+    function ClickRequestDeviceMotionEvent () {
+        window.DeviceMotionEvent.requestPermission()
+            .then(response => {
+                if (response === 'granted') {
+                    document.getElementById("askPermission").style.display = "none";
+                }
+            });
+    }
+
+    function sum(values) {
+        return values.reduce((acc, val) => acc + val);
+    }
+
+    function mean(values) {
+        return sum(values) / values.length;
+    }
+
+    function stddev(arr) {
+        const arr_mean = mean(arr);
+        const r = function(acc, val) {
+            return acc + ((val - arr_mean) * (val - arr_mean));
+        };
+        return Math.sqrt(arr.reduce(r, 0.0) / arr.length);
+    }
+
+    function smoothed_z_score(y, params) {
+        var p = params || {};
+        const lag = p.lag || 5;
+        const threshold = p.threshold || 0.5;
+        const influence = p.influence || 0.5;
+
+        if (y === undefined || y.length < lag + 2) {
+            throw ` ## y data array to short(${y.length}) for given lag of ${lag}`;
+        }
+
+        // init variables
+        var signals = Array(y.length).fill(0);
+        var filteredY = y.slice(0);
+        const lead_in = y.slice(0, lag);
+
+        var avgFilter = [];
+        avgFilter[lag - 1] = mean(lead_in);
+        var stdFilter = [];
+        stdFilter[lag - 1] = stddev(lead_in);
+
+        for (var i = lag; i < y.length; i++) {
+            if (Math.abs(y[i] - avgFilter[i - 1]) > (threshold * stdFilter[i - 1])) {
+                if (y[i] > avgFilter[i - 1]) {
+                    signals[i] = 1 ;// positive signal
+                } else {
+                    signals[i] = -1 ;// negative signal
+                }
+                // make influence lower
+                filteredY[i] = influence * y[i] + (1 - influence) * filteredY[i - 1];
+            } else {
+                signals[i] = 0 ;// no signal
+                filteredY[i] = y[i];
+            }
+
+            // adjust the filters
+            const y_lag = filteredY.slice(i - lag, i);
+            avgFilter[i] = mean(y_lag);
+            stdFilter[i] = stddev(y_lag);
+        }
+        return signals
+    }
+
+    function countPeak(signals) {
+        if (signals == null) {
+            return 0;
+        }
+        if (signals.length < 2) {
+            return 0;
+        }
+
+        let count = 0;
+        let prev = signals[0];
+        for (var i = 1; i < signals.length; i++) {
+            if (prev == 0) {
+                if (signals[i] == 1) {
+                } else if (signals[i] == -1) {
+                    count += 1;
+                } else {
+                }
+            }
+            prev = signals[i];
+        }
+        return count;
+    }
+
+    window.addEventListener("devicemotion", function(evt){
+        var ax = Math.round(evt.acceleration.x);
+        var ay = Math.round(evt.acceleration.y);
+        var az = Math.round(evt.acceleration.z);
+
+        //if the acceleration does not exceed a certain level, the event will not pass
+        if (! (-1 <ax && ax <1) ||! (-1 <ay && ay <1) ||! (-1 <az && az <1)) {
+
+
+            var vec = Math.sqrt((ax**2)+(ay**2)+(az**2));
+            if(vec>20.0){ //if minimum distance(vector) is greater than 20 then only proceed
+                // console.log(`ax: ${ax}, ay:${ay}, az: ${az}`);
+                motionData.push(vec);
+                document.getElementById("x").innerHTML=ax;
+                document.getElementById("y").innerHTML=ay;
+                document.getElementById("z").innerHTML=az;
+                document.getElementById("vec").innerHTML=vec;
+            }
+
+            //resetting originalDateWhenShakeStopped as device is shaking again
+            isShakingInContinue = true;
+            originalDateWhenShakeStopped=null;
+        }else {
+            //if shaking stopped check for resetting to total peak count after 3 minute
+            if(ax===0 && ay===0 && az===0){
+                if(isShakingInContinue){
+                    originalDateWhenShakeStopped= new Date();
+                    isShakingInContinue = false;
+                }else {
+                    newDateAfterShakeStopped= new Date();
+                }
+                // console.log(originalDateWhenShakeStopped,newDateAfterShakeStopped);
+                check3MinuteDifference(originalDateWhenShakeStopped,newDateAfterShakeStopped);
+            }
+        }
+
+
+    });
+
+    function check3MinuteDifference(originalDateWhenShakeStopped, newDateAfterShakeStopped) {
+        var diff = Math.abs(originalDateWhenShakeStopped-newDateAfterShakeStopped);
+        var minutes = Math.floor((diff/1000)/60);
+
+        //for resetting count after 3 minutes.
+        if(minutes === 1){  //set 1 minute for debug
+            //clear value
+            originalDateWhenShakeStopped= null;
+            newDateAfterShakeStopped=null;
+            isDeviceShakeStopped=true;
+            // console.log(originalDateWhenShakeStopped,newDateAfterShakeStopped,isDeviceShakeStopped);
+            document.getElementById("count").innerHTML=0;
+        }
+    }
+
+    timer = setInterval(function(){
+        if (motionData == null) {
+            return;
+        }
+        if (motionData.length < 5) {
+            return;
+        }
+        const std = stddev(motionData);
+        const signals = smoothed_z_score(motionData);
+
+        document.getElementById("signals").innerHTML=JSON.stringify(signals);
+
+        var numbers = Array.from(Array(signals.length).keys());
+
+        var values = signals;
+
+        var data = numbers.map( (n, v) => ({num : n, value : values[v]}) );
+
+        drawGraph(data);
+
+        const peaks = countPeak(signals);
+
+        console.log('std=' + std + ', peaks=' + peaks);
+
+        updateScreen(std, peaks);
+
+        // sendData(document.getElementById("team").value, std, peaks);
+        motionData = [];
+
+    },1000);
+
+    function updateScreen(std, peaks) {
+        var pow = document.getElementById("power");
+        var cnt = document.getElementById("count");
+        totalCount += peaks;
+        pow.innerHTML = std;
+        cnt.innerHTML = totalCount;
+        // cnt.innerHTML = peaks;
+    }
+    // function sendData(name, team, std, peaks) {
+    //     let payload = { "name" : name, "team" : team, "power" : std, "count" : peaks , "timestamp" : Date.now()};
+    //     payload = JSON.stringify(payload);
+    //
+    //     var xhr = new XMLHttpRequest();
+    //     xhr.open("POST", "/");
+    //     xhr.onreadystatechange = function()
+    //     {
+    //         var READYSTATE_COMPLETED = 4;
+    //         var HTTP_STATUS_OK = 200;
+    //
+    //         if( this.readyState == READYSTATE_COMPLETED
+    //             && this.status == HTTP_STATUS_OK )
+    //         {
+    //             // console.log( this.responseText );
+    //         }
+    //     }
+    //     xhr.setRequestHeader( 'Content-Type', 'application/json');
+    //     xhr.send(payload);
+    // }
+
+function drawGraph(data){
+
+    <!-- Chart code -->
+
+    am4core.ready(function() {
+
+    // Themes begin
+    am4core.useTheme(am4themes_animated);
+    // Themes end
+
+    // Create chart instance
+    var chart = am4core.create("chartdiv", am4charts.XYChart);
+    chart.paddingRight = 20;
+
+    // Add data
+    chart.data = data;
+
+    // Create axes
+    var categoryAxis = chart.xAxes.push(new am4charts.CategoryAxis());
+    categoryAxis.dataFields.category = "num";
+    categoryAxis.renderer.minGridDistance = 10;
+    categoryAxis.renderer.grid.template.location = 0.5;
+    categoryAxis.startLocation = 0.5;
+    categoryAxis.endLocation = 0.5;
+
+    // Create value axis
+    var valueAxis = chart.yAxes.push(new am4charts.ValueAxis());
+    valueAxis.baseValue = 0;
+
+    // Create series
+    var series = chart.series.push(new am4charts.LineSeries());
+    series.dataFields.valueY = "value";
+    series.dataFields.categoryX = "num";
+    series.strokeWidth = 2;
+    series.tensionX = 0.77;
+
+    }); // end am4core.ready()
+
+}
+
+</script>
+
+</body>
+</html>
